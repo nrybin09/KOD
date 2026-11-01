@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nka-model"
+version = "1.0.0"
+description = "Моделирование движения НКА GPS и ГЛОНАСС"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "matplotlib>=3.7",
+    "numpy>=1.24",
+    "PySide6>=6.5",
+]
+
+[tool.setuptools.packages.find]
+include = ["nka_app*"]

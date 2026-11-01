@@ -1,0 +1,51 @@
+{
+  "source": "Rinex alm",
+  "signal": "L1CA",
+  "datum": "WGS84",
+  "time_system": "GPS",
+  "complete": false,
+  "observer": {
+    "xyz_m": [
+      2849889.422328327,
+      2196295.5103602773,
+      5248992.18745125
+    ],
+    "datum": "WGS84"
+  },
+  "settings": {
+    "node": 1477673856.0,
+    "epsilon": 0.0,
+    "backward_minutes": -10.0,
+    "forward_minutes": 10.0,
+    "step_seconds": 10.0,
+    "speed": 10.0,
+    "n4": 8,
+    "sample_count": null
+  },
+  "satellites": [
+    6,
+    11,
+    12,
+    13,
+    21,
+    25,
+    28,
+    29,
+    31
+  ],
+  "rows": {
+    "6": 31,
+    "11": 31,
+    "12": 31,
+    "13": 31,
+    "21": 31,
+    "25": 31,
+    "28": 31,
+    "29": 31,
+    "31": 31
+  },
+  "notes": [
+    "Номер GPS-недели показан как в файле; неоднозначность rollover не устраняется автоматически."
+  ],
+  "parameter_edits": []
+}
