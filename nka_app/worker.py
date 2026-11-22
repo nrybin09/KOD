@@ -37,7 +37,7 @@ class CalculationWorker(QThread):
                     if self.cancelled.is_set():
                         return
                     frame[prn] = calculate_sample(self.dataset, self.observer, prn,
-                                                  self.settings.center + dt, dt, self.settings.n4)
+                                                  self.settings.center + dt, dt)
                 if self.cancelled.is_set():
                     return
                 self.frame.emit(self.generation, frame, index, len(self.offsets))

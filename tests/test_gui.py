@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 import tempfile
 
-from PySide6.QtWidgets import QApplication, QLabel, QLineEdit
+from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QSplitter
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 
@@ -287,8 +287,13 @@ class GuiTests(unittest.TestCase):
         w.show()
         self.app.processEvents()
         self.assertLessEqual(w.sky.geometry().bottom(), w.visibility_label.geometry().top())
+        splitter = w.findChild(QSplitter)
+        self.assertFalse(splitter.handle(1).isEnabled())
+        coordinate_widgets = [w.datum, w.coord_format, *w.coord_values, w.apply_button]
+        for previous, current in zip(coordinate_widgets, coordinate_widgets[1:]):
+            self.assertLess(previous.geometry().right(), current.geometry().left())
 
-    def test_step_and_speed_do_not_rebuild_but_time_range_does(self):
+    def test_simulation_fields_do_not_rebuild_but_epsilon_does(self):
         w = self.window
         self.load()
         w.apply_observer()
@@ -297,20 +302,15 @@ class GuiTests(unittest.TestCase):
         with patch.object(w, "_update_raw_values", wraps=w._update_raw_values) as rebuild:
             w.step.setValue(w.step.value() + 1)
             w.speed.setValue(w.speed.value() + 1)
+            w.backward.setValue(w.backward.value() - 1)
+            w.forward.setValue(w.forward.value() + 1)
+            self.app.processEvents()
+            rebuild.assert_not_called()
+            QTest.qWait(1100)
             self.app.processEvents()
             rebuild.assert_not_called()
         self.assertIs(w.table.item(0, 1), first_item)
         self.assertFalse(w.preview_timer.isActive())
-        with patch.object(w, "_update_raw_values", wraps=w._update_raw_values) as rebuild:
-            w.backward.setValue(w.backward.value() - 1)
-            w.forward.setValue(w.forward.value() + 1)
-            rebuild.assert_not_called()
-            QTest.qWait(500)
-            self.app.processEvents()
-            rebuild.assert_not_called()
-            QTest.qWait(600)
-            self.app.processEvents()
-            self.assertEqual(rebuild.call_count, 1)
         with patch.object(w, "_update_raw_values", wraps=w._update_raw_values) as rebuild:
             for epsilon in (10, 20, 30, 40, 50):
                 w.epsilon.setValue(epsilon)

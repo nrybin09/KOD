@@ -33,6 +33,19 @@ def file_filter(source, signal):
     return f"{source} / {signal} (*.{extension})"
 
 
+def glonass_n4_from_year(year):
+    """Номер четырёхлетнего интервала ГЛОНАСС, начинающегося с 1996 года."""
+
+    value = float(year)
+    if not math.isfinite(value) or not value.is_integer():
+        raise ValueError("Год альманаха ГЛОНАСС должен быть целым числом.")
+    year = int(value)
+    n4 = (year - 1996) // 4 + 1
+    if not 1 <= n4 <= 31:
+        raise ValueError("Год альманаха ГЛОНАСС должен находиться в диапазоне 1996–2119.")
+    return n4
+
+
 def _nonempty(path):
     raw = path.read_bytes()
     try:
@@ -181,7 +194,6 @@ def load_dataset(filename, source, signal):
                     "eps_a": orbit[3], "delta_Ta": orbit[4], "delta_Ta_dot": orbit[5],
                 }
                 add(metadata[0], (data.Na - 1) * 86400 + data.ta, data, parameters)
-            notes.append("В альманахе нет N4: задайте четырёхлетний интервал вручную; дата показана номером суток.")
         time_system = "GPS" if signal == "L1CA" else "ГЛОНАСС"
         calendar = False
     if not records:
@@ -197,7 +209,7 @@ def load_dataset(filename, source, signal):
     return dataset
 
 
-def state_vector(dataset, record, epoch, n4=1):
+def state_vector(dataset, record, epoch):
     if record.error:
         raise ValueError(f"НКА {record.prn}: {record.error}")
     data = record.data
@@ -205,6 +217,7 @@ def state_vector(dataset, record, epoch, n4=1):
         if dataset.signal == "L1CA":
             result = calc_gps_from_alm(data, data.toa + epoch - record.epoch)
         else:
+            n4 = glonass_n4_from_year(record.parameters["year"])
             cycle_days = 1460 if n4 == 27 else 1461
             day, seconds = divmod(epoch, 86400)
             task = {"N": int(day) % cycle_days + 1, "N4": n4, "time_glo": seconds}
@@ -230,8 +243,8 @@ def state_vector(dataset, record, epoch, n4=1):
     return position, velocity
 
 
-def calculate_sample(dataset, observer, prn, epoch, dt, n4=1):
+def calculate_sample(dataset, observer, prn, epoch, dt):
     record = dataset.nearest(prn, epoch)
-    xyz, velocity = state_vector(dataset, record, epoch, n4)
+    xyz, velocity = state_vector(dataset, record, epoch)
     az, el = azimuth_elevation(xyz, observer, dataset.datum)
     return Sample(float(dt), az, el, *map(float, xyz), *map(float, velocity), float(np.linalg.norm(xyz)))

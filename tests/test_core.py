@@ -8,7 +8,10 @@ import unittest
 import numpy as np
 
 from nka_app.models import Experiment, SimulationSettings
-from nka_app.navigation import calculate_sample, file_filter, format_extension, load_dataset, state_vector
+from nka_app.navigation import (
+    calculate_sample, file_filter, format_extension, glonass_n4_from_year,
+    load_dataset, state_vector,
+)
 from nka_app.exporter import HEADER, experiment_folder_name, export_experiment
 from nka_app.coordinates import Observer, azimuth_elevation, blh_to_xyz, transform_xyz, xyz_to_blh
 from nka_app.math_eph_glonass import glo_ecef_from_icd
@@ -52,6 +55,24 @@ class CoordinatesTests(unittest.TestCase):
 
 
 class NavigationTests(unittest.TestCase):
+    def test_glonass_n4_is_calculated_from_every_file_year(self):
+        expected = {
+            1996: 1,
+            1999: 1,
+            2000: 2,
+            2017: 6,
+            2023: 7,
+            2026: 8,
+            2100: 27,
+            2119: 31,
+        }
+        for year, n4 in expected.items():
+            with self.subTest(year=year):
+                self.assertEqual(glonass_n4_from_year(year), n4)
+        for year in (1995, 2000.5, 2120):
+            with self.subTest(invalid_year=year), self.assertRaises(ValueError):
+                glonass_n4_from_year(year)
+
     def test_all_existing_data_files(self):
         observer = Observer.from_values((55.75, 37.62, 200), "BLH", "WGS84")
         for source, signal, count in CASES:
@@ -59,7 +80,7 @@ class NavigationTests(unittest.TestCase):
                 dataset = load_dataset(data_file(source, signal), source, signal)
                 self.assertEqual(len(dataset.satellites), count)
                 for prn in dataset.available_satellites:
-                    sample = calculate_sample(dataset, observer, prn, dataset.epochs[0], 0, 8)
+                    sample = calculate_sample(dataset, observer, prn, dataset.epochs[0], 0)
                     self.assertTrue(np.all(np.isfinite(sample.values())))
                     self.assertTrue(2e7 < sample.r < 3e7)
                     self.assertTrue(0 <= sample.az < 360)
@@ -91,7 +112,7 @@ class NavigationTests(unittest.TestCase):
                     for prn in dataset.available_satellites:
                         record = dataset.records[prn][0]
                         self.assertEqual(tuple(record.parameters), expected_fields[signal])
-                        position, velocity = state_vector(dataset, record, record.epoch, 7)
+                        position, velocity = state_vector(dataset, record, record.epoch)
                         self.assertTrue(np.all(np.isfinite(np.r_[position, velocity])))
                         self.assertTrue(2e7 < np.linalg.norm(position) < 3e7)
 
@@ -144,8 +165,8 @@ class NavigationTests(unittest.TestCase):
         d = load_dataset(data_file("Rinex alm", "L1OF"), "Rinex alm", "L1OF")
         r = d.records[1][0]
         boundary = r.data.Na * 86400
-        a, _ = state_vector(d, r, boundary - 1, 8)
-        b, _ = state_vector(d, r, boundary + 1, 8)
+        a, _ = state_vector(d, r, boundary - 1)
+        b, _ = state_vector(d, r, boundary + 1)
         self.assertLess(np.linalg.norm(a - b), 10000)
 
     def test_nv08c_placeholder(self):

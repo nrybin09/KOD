@@ -16,19 +16,32 @@ import json
 import math
 import random
 import re
+import struct
 import sys
+from tempfile import TemporaryDirectory
 
 # Численные расчёты.
 import numpy as np
 
+# Последовательный порт NV08C. Импорт остаётся необязательным на уровне
+# модуля, чтобы приложение могло показать понятную ошибку, если зависимости
+# ещё не установлены.
+try:
+    import serial
+    from serial.tools import list_ports as serial_list_ports
+except ImportError:  # pragma: no cover - проверяется при открытии окна NV08C
+    serial = None
+    serial_list_ports = None
+
 # Qt-интерфейс.
 from PySide6.QtCore import QEvent, QPointF, QRectF, QSignalBlocker, QThread, QTimer, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QFontDatabase, QPainter, QPen
+from PySide6.QtGui import QBrush, QColor, QFont, QFontDatabase, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDoubleSpinBox,
-    QFileDialog, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
-    QMainWindow, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSpinBox,
-    QSplitter, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
+    QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout,
+    QGroupBox, QHBoxLayout, QHeaderView, QLabel, QMainWindow, QMessageBox,
+    QProgressBar, QPushButton, QScrollArea, QSpinBox, QSplitter, QTabWidget,
+    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 # Графики Matplotlib.

@@ -1,12 +1,12 @@
 """Главное окно по макету из описания программы."""
 
 from nka_app.common import (
-    NAVIGATION_TABLE_HEADERS, PROJECT_ROOT, SIGNALS, SOURCES,
+    NAVIGATION_TABLE_HEADERS, PROJECT_ROOT, SIGNALS, SOURCES, Path,
     TABLE_UPDATE_DELAY_MS, TIME_FIELDS,
     QAbstractItemView, QApplication, QBrush, QColor, QComboBox, QDoubleSpinBox,
-    QEvent, QFileDialog, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow,
+    QDialog, QEvent, QFileDialog, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow,
     QMessageBox, QProgressBar, QPushButton, QScrollArea, QSignalBlocker, QSpinBox, QSplitter, QTabWidget,
-    QTableWidgetItem, QTimer, QVBoxLayout, QWidget, Qt,
+    QTableWidgetItem, QTimer, QVBoxLayout, QWidget, Qt, TemporaryDirectory,
 )
 
 from nka_app.models import Experiment, SimulationSettings
@@ -19,6 +19,8 @@ from nka_app.theme import configure_font
 from nka_app.navigation_table import NavigationTable
 from nka_app.sky import SkyMap
 from nka_app.trajectories import TrajectoryPlots
+from nka_app.nv08c_dialog import NV08CReceiverDialog, NV08CSettingsDialog
+from nka_app.nv08c_protocol import nv08c_extension, write_nv08c_file
 
 def spin(low, high, value, decimals=2, suffix=""):
     widget = QDoubleSpinBox()
@@ -37,7 +39,7 @@ class MainWindow(QMainWindow):
         configure_font()
         self.setWindowTitle("Моделирование движения НКА · GPS / ГЛОНАСС")
         self.resize(1460, 920)
-        self.setMinimumSize(1120, 760)
+        self.setMinimumSize(1360, 760)
         self.dataset = None
         self.observer = None
         self.selected = set()
@@ -52,6 +54,8 @@ class MainWindow(QMainWindow):
         self._closing = False
         self._table_prns = []
         self._shown_records = {}
+        self._nv08c_temp = None
+        self._nv08c_dialog = None
         self.plots = None
         self._refresh_node_labels_pending = False
         self._build_ui()
@@ -86,8 +90,8 @@ class MainWindow(QMainWindow):
         self.signal = QComboBox()
         self.signal.addItem("")
         self.signal.addItems(SIGNALS)
-        self.source.currentTextChanged.connect(lambda: self._update_enabled())
-        self.signal.currentTextChanged.connect(lambda: self._update_enabled())
+        self.source.currentTextChanged.connect(self._source_changed)
+        self.signal.currentTextChanged.connect(self._source_changed)
         self.load_button = QPushButton("Загрузить файл.")
         self.load_button.clicked.connect(self.choose_file)
         self.file_status = QLabel("")
@@ -102,25 +106,39 @@ class MainWindow(QMainWindow):
 
         self.coordinates_group = QGroupBox("2. Координаты наблюдателя")
         coordinates = QHBoxLayout(self.coordinates_group)
+        coordinates.setContentsMargins(8, 10, 8, 8)
+        coordinates.setSpacing(4)
         self.datum = QComboBox()
         self.datum.addItems(["WGS84", "PZ90"])
+        self.datum.setFixedWidth(100)
         self.coord_format = QComboBox()
         self.coord_format.addItems(["BLH", "XYZ"])
+        self.coord_format.setFixedWidth(74)
         self.coord_format.currentTextChanged.connect(self._coordinate_format_changed)
-        self.coord_labels = [QLabel("B, °:"), QLabel("L, °:"), QLabel("H, м:")]
+        self.coord_labels = [QLabel("B,°"), QLabel("L,°"), QLabel("H,м")]
         self.coord_values = [spin(-90, 90, 55.75, 7), spin(-180, 180, 37.62, 7), spin(-10000, 1e8, 200, 3)]
-        coordinates.addWidget(QLabel("ГЦСК:"))
-        coordinates.addWidget(self.datum)
-        coordinates.addWidget(QLabel("Формат:"))
-        coordinates.addWidget(self.coord_format)
-        for label, value in zip(self.coord_labels, self.coord_values):
-            coordinates.addWidget(label)
-            coordinates.addWidget(value)
-        coordinates.addStretch(1)
+        for value in self.coord_values:
+            value.setFixedWidth(128)
         self.apply_button = QPushButton("Применить")
+        self.apply_button.setFixedWidth(103)
         self.apply_button.clicked.connect(self.apply_observer)
+        datum_label = QLabel("ГЦСК")
+        datum_label.setFixedWidth(50)
+        format_label = QLabel("Формат")
+        format_label.setFixedWidth(62)
+        for label in self.coord_labels:
+            label.setFixedWidth(38)
+        for label, widget in (
+            (datum_label, self.datum),
+            (format_label, self.coord_format),
+            (self.coord_labels[0], self.coord_values[0]),
+            (self.coord_labels[1], self.coord_values[1]),
+            (self.coord_labels[2], self.coord_values[2]),
+        ):
+            coordinates.addWidget(label)
+            coordinates.addWidget(widget)
         coordinates.addWidget(self.apply_button)
-        layout.addWidget(self.coordinates_group)
+        coordinates.addStretch(1)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         layout.addWidget(splitter, 1)
@@ -151,10 +169,16 @@ class MainWindow(QMainWindow):
         self.plot_layout.setContentsMargins(2, 2, 2, 2)
         self.tabs.addTab(self.plot_page, "Графики")
         self.tabs.setTabEnabled(1, False)
-        splitter.addWidget(self.tabs)
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(6)
+        left_layout.addWidget(self.coordinates_group)
+        left_layout.addWidget(self.tabs, 1)
+        splitter.addWidget(left)
 
         right = QWidget()
-        right.setMinimumWidth(355)
+        right.setMinimumWidth(330)
         right.setMaximumWidth(490)
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(10, 0, 0, 0)
@@ -175,13 +199,9 @@ class MainWindow(QMainWindow):
         self.grid_count.setKeyboardTracking(False)
         self.grid_count.hide()
         self.speed = spin(0.1, 60, 10, 1)
-        self.n4 = QSpinBox()
-        self.n4.setRange(1, 100)
-        self.n4_label = QLabel("N4 (нет в файле):")
-        self.n4.setValue(8)
         form.addWidget(QLabel("Узловой\nмомент:"), 0, 0)
         form.addWidget(self.node, 0, 1, 1, 3)
-        for row, col, label, widget in ((1, 0, "Epsilon (±):", self.epsilon), (1, 2, self.n4_label, self.n4),
+        for row, col, label, widget in ((1, 0, "Epsilon (±):", self.epsilon),
                                          (2, 0, "Назад, мин:", self.backward), (2, 2, "Вперёд, мин:", self.forward),
                                          (3, 2, "Точек/с:", self.speed)):
             form.addWidget(QLabel(label) if isinstance(label, str) else label, row, col)
@@ -189,8 +209,6 @@ class MainWindow(QMainWindow):
         form.addWidget(self.grid_mode, 3, 0)
         form.addWidget(self.step, 3, 1)
         form.addWidget(self.grid_count, 3, 1)
-        self.n4.hide()
-        self.n4_label.hide()
         self.point_count = QLabel("")
         self.point_count.setWordWrap(True)
         form.addWidget(self.point_count, 4, 0, 1, 4)
@@ -198,8 +216,7 @@ class MainWindow(QMainWindow):
         for widget in (self.step, self.speed, self.grid_count):
             widget.valueChanged.connect(self._experiment_settings_changed)
         for widget in (self.backward, self.forward):
-            widget.valueChanged.connect(self._deferred_settings_changed)
-        self.n4.valueChanged.connect(self._node_changed)
+            widget.valueChanged.connect(self._experiment_settings_changed)
         self.grid_mode.currentIndexChanged.connect(self._grid_mode_changed)
         self.node.currentIndexChanged.connect(self._node_changed)
         right_layout.addWidget(self.model_group)
@@ -241,16 +258,21 @@ class MainWindow(QMainWindow):
         right_scroll = QScrollArea()
         right_scroll.setWidgetResizable(True)
         right_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        right_scroll.setMinimumWidth(390)
+        right_scroll.setMinimumWidth(365)
         right_scroll.setMaximumWidth(510)
         right_scroll.setWidget(right)
         splitter.addWidget(right_scroll)
         splitter.setSizes([980, 420])
         splitter.setStretchFactor(0, 1)
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(1)
+        splitter.handle(1).setEnabled(False)
         self.status = QLabel("Выберите источник и нажмите «Загрузить файл».")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
-        self.setStyleSheet("""
+        down_arrow = (PROJECT_ROOT / "nka_app" / "assets" / "chevron_down.svg").as_posix()
+        up_arrow = (PROJECT_ROOT / "nka_app" / "assets" / "chevron_up.svg").as_posix()
+        style_sheet = """
             QMainWindow, QWidget { font-family: 'Times New Roman'; font-size: 12pt; color: #233047; }
             QMainWindow { background: #f3f6fa; }
             QGroupBox { background: white; border: 1px solid #d5deeb; border-radius: 7px;
@@ -260,15 +282,68 @@ class MainWindow(QMainWindow):
             QPushButton:hover { background: #e8f0fc; }
             QPushButton:disabled { color: #96a0af; border-color: #dee4ec; background: #f1f3f6; }
             QPushButton#primary:enabled { color: white; background: #245caa; border-color: #245caa; font-weight: 600; }
-            QComboBox, QDoubleSpinBox, QSpinBox { padding: 4px; min-height: 21px; }
+            QComboBox, QDoubleSpinBox, QSpinBox {
+                color: #233047; background: white; border: 1px solid #aeb9c8;
+                border-radius: 5px; padding: 4px 6px 4px 8px; min-height: 23px;
+                selection-color: white; selection-background-color: #245caa;
+            }
+            QComboBox:hover, QDoubleSpinBox:hover, QSpinBox:hover { border-color: #7f96b5; }
+            QComboBox:focus, QDoubleSpinBox:focus, QSpinBox:focus {
+                border: 1px solid #3b78c8; background: #ffffff;
+            }
+            QComboBox:disabled, QDoubleSpinBox:disabled, QSpinBox:disabled {
+                color: #96a0af; background: #f1f3f6; border-color: #d8dee7;
+            }
+            QComboBox::drop-down {
+                subcontrol-origin: border; subcontrol-position: top right;
+                width: 25px; background: #f4f7fb; border-left: 1px solid #d5deeb;
+                border-top-right-radius: 5px; border-bottom-right-radius: 5px;
+            }
+            QComboBox::drop-down:hover { background: #e8f0fc; }
+            QComboBox::drop-down:disabled { background: #edf0f4; border-left-color: #d8dee7; }
+            QComboBox::down-arrow { image: url("__DOWN_ARROW__"); width: 10px; height: 7px; }
+            QDoubleSpinBox::up-button, QSpinBox::up-button {
+                subcontrol-origin: border; subcontrol-position: top right;
+                width: 25px; background: #f4f7fb; border-left: 1px solid #d5deeb;
+                border-bottom: 1px solid #e1e7ef; border-top-right-radius: 5px;
+            }
+            QDoubleSpinBox::down-button, QSpinBox::down-button {
+                subcontrol-origin: border; subcontrol-position: bottom right;
+                width: 25px; background: #f4f7fb; border-left: 1px solid #d5deeb;
+                border-top: 0; border-bottom-right-radius: 5px;
+            }
+            QDoubleSpinBox::up-button:hover, QSpinBox::up-button:hover,
+            QDoubleSpinBox::down-button:hover, QSpinBox::down-button:hover { background: #e8f0fc; }
+            QDoubleSpinBox::up-button:disabled, QSpinBox::up-button:disabled,
+            QDoubleSpinBox::down-button:disabled, QSpinBox::down-button:disabled {
+                background: #edf0f4; border-left-color: #d8dee7;
+            }
+            QDoubleSpinBox::up-arrow, QSpinBox::up-arrow {
+                image: url("__UP_ARROW__"); width: 10px; height: 7px;
+            }
+            QDoubleSpinBox::down-arrow, QSpinBox::down-arrow {
+                image: url("__DOWN_ARROW__"); width: 10px; height: 7px;
+            }
+            QComboBox QAbstractItemView {
+                color: #233047; background: white; selection-color: white;
+                selection-background-color: #245caa;
+            }
             QTabWidget::pane { border: 1px solid #d5deeb; background: white; }
-            QTabBar::tab { padding: 9px 25px; }
+            QTabBar::tab { color: #233047; background: #eef2f7; padding: 9px 25px; }
             QTabBar::tab:selected { background: white; color: #245caa; font-weight: 600; }
+            QTabBar::tab:disabled { color: #96a0af; background: #f1f3f6; }
             QTableWidget { background: white; gridline-color: #e1e7ef; border: 1px solid #d5deeb; }
             QHeaderView::section { background: #eaf0f8; padding: 5px; border: 1px solid #d5deeb; }
-            QProgressBar { border: 1px solid #d5deeb; border-radius: 4px; text-align: center; }
+            QTableCornerButton::section { background: #eaf0f8; border: 1px solid #d5deeb; }
+            QScrollArea, QScrollArea > QWidget > QWidget { background: #f3f6fa; }
+            QProgressBar {
+                color: #233047; background: #eef2f7; border: 1px solid #d5deeb;
+                border-radius: 4px; text-align: center;
+            }
             QProgressBar::chunk { background: #84b2eb; }
-        """)
+        """
+        self.setStyleSheet(style_sheet.replace("__DOWN_ARROW__", down_arrow)
+                           .replace("__UP_ARROW__", up_arrow))
 
     def _coordinate_format_changed(self, mode):
         values = [w.value() for w in self.coord_values]
@@ -277,7 +352,7 @@ class MainWindow(QMainWindow):
                          else xyz_to_blh(values, self.datum.currentText()))
         except ValueError:
             converted = (0, 0, 0) if mode == "XYZ" else (55.75, 37.62, 200)
-        labels = ("X, м:", "Y, м:", "Z, м:") if mode == "XYZ" else ("B, °:", "L, °:", "H, м:")
+        labels = ("X,м", "Y,м", "Z,м") if mode == "XYZ" else ("B,°", "L,°", "H,м")
         ranges = [(-1e9, 1e9)] * 3 if mode == "XYZ" else [(-90, 90), (-180, 180), (-10000, 1e8)]
         for index, widget in enumerate(self.coord_values):
             widget.setRange(*ranges[index])
@@ -290,7 +365,7 @@ class MainWindow(QMainWindow):
             self.status.setText("Сначала выберите источник и сигнал навигационного файла.")
             return
         if self.source.currentText().startswith("NV08C"):
-            QMessageBox.information(self, "NV08C", "Выбор NV08C предусмотрен. Парсер и расчёт пока не реализованы.")
+            self.open_nv08c()
             return
         data_folder = PROJECT_ROOT / "data"
         folders = {
@@ -307,6 +382,53 @@ class MainWindow(QMainWindow):
         if filename:
             self.load_file(filename)
 
+    def _source_changed(self, *_):
+        nv08c = self.source.currentText().startswith("NV08C")
+        self.load_button.setText("Подключить приёмник" if nv08c else "Загрузить файл.")
+        self._update_enabled()
+
+    def open_nv08c(self):
+        """Открыть минимальные настройки UART, затем окно выбранной системы."""
+
+        source = self.source.currentText()
+        signal = self.signal.currentText()
+        settings = NV08CSettingsDialog(self)
+        if settings.exec() != QDialog.DialogCode.Accepted:
+            return
+        dialog = NV08CReceiverDialog(
+            settings.port_name, settings.baud_rate, source, signal, self
+        )
+        dialog.records_changed.connect(
+            lambda records: self._nv08c_records_changed(records, source, signal)
+        )
+        self._nv08c_dialog = dialog
+        dialog.exec()
+        self._nv08c_dialog = None
+
+    def _nv08c_records_changed(self, records, source, signal):
+        """Сразу передать принятые записи существующему парсеру и таблице."""
+
+        kind = "eph" if source.endswith("eph") else "alm"
+        rinex_source = f"Rinex {kind}"
+        if self._nv08c_temp is None:
+            self._nv08c_temp = TemporaryDirectory(prefix="nka_nv08c_")
+        extension = nv08c_extension(kind, signal)
+        path = Path(self._nv08c_temp.name) / f"NV08C_live.{extension}"
+        try:
+            write_nv08c_file(records, kind, signal, path)
+            dataset = load_dataset(path, rinex_source, signal)
+        except (OSError, ValueError, IndexError, OverflowError) as exc:
+            self.file_status.setText("Ошибка данных NV08C")
+            self._error(str(exc))
+            return
+        dataset.path = Path(f"NV08C_live.{extension}")
+        dataset.notes.append("Данные получены непосредственно от приёмника NV08C.")
+        system = "GPS" if signal == "L1CA" else "ГЛОНАСС"
+        self._apply_dataset(
+            dataset,
+            f"Получено из NV08C · {system} · {len(dataset.satellites)} НКА",
+        )
+
     def load_file(self, filename):
         try:
             dataset = load_dataset(filename, self.source.currentText(), self.signal.currentText())
@@ -314,6 +436,11 @@ class MainWindow(QMainWindow):
             self.file_status.setText("Ошибка загрузки")
             self._error(str(exc))
             return False
+        return self._apply_dataset(dataset)
+
+    def _apply_dataset(self, dataset, file_status=None):
+        """Единое заполнение интерфейса данными из файла и из NV08C."""
+
         self.dataset = dataset
         self.selected.clear()
         self.node.blockSignals(True)
@@ -322,13 +449,9 @@ class MainWindow(QMainWindow):
             self.node.addItem(dataset.label(epoch, True), epoch)
         self.node.blockSignals(False)
         self._refresh_node_labels()
-        is_glo_alm = dataset.source == "Rinex alm" and dataset.signal == "L1OF"
-        self.n4.setVisible(is_glo_alm)
-        self.n4_label.setVisible(is_glo_alm)
         system = "GPS" if dataset.signal == "L1CA" else "ГЛОНАСС"
-        self.file_status.setText(
-            f"Данные загружены · {system} · {dataset.path.name} · {len(dataset.satellites)} НКА"
-        )
+        self.file_status.setText(file_status or
+                                 f"Данные загружены · {system} · {dataset.path.name} · {len(dataset.satellites)} НКА")
         self.status.setText("Задайте координаты наблюдателя и нажмите «Применить».")
         self._build_table()
         self._settings_changed()
@@ -350,9 +473,15 @@ class MainWindow(QMainWindow):
         self._preview()
 
     def settings(self):
-        return SimulationSettings(float(self.node.currentData()), self.epsilon.value(), self.backward.value(),
-                                  self.forward.value(), self.step.value(), self.speed.value(), self.n4.value(),
-                                  self.grid_count.value() if self.grid_mode.currentIndex() == 1 else None)
+        return SimulationSettings(
+            node=float(self.node.currentData()),
+            epsilon=self.epsilon.value(),
+            backward_minutes=self.backward.value(),
+            forward_minutes=self.forward.value(),
+            step_seconds=self.step.value(),
+            speed=self.speed.value(),
+            sample_count=self.grid_count.value() if self.grid_mode.currentIndex() == 1 else None,
+        )
 
     def _grid_mode_changed(self, index):
         self.step.setVisible(index == 0)
@@ -404,7 +533,7 @@ class MainWindow(QMainWindow):
         self._update_enabled()
 
     def _deferred_settings_changed(self, *_):
-        """Объединить частые изменения колёсиком в одно обновление таблицы."""
+        """Отложить обновление таблицы после изменения Epsilon."""
         if not self.dataset or self.running:
             return
         self._invalidate_results()
@@ -757,6 +886,8 @@ class MainWindow(QMainWindow):
         self.source.setEnabled(not loaded)
         self.signal.setEnabled(not loaded)
         format_selected = bool(self.source.currentText() and self.signal.currentText())
+        self.load_button.setText("Подключить приёмник" if self.source.currentText().startswith("NV08C")
+                                 else "Загрузить файл.")
         self.load_button.setEnabled(not loaded and format_selected)
         self.coordinates_group.setEnabled(loaded and not ready)
         self.model_group.setEnabled(ready and not self.running)
@@ -794,6 +925,9 @@ class MainWindow(QMainWindow):
         self._invalidate_results()
         self._table_prns = []
         self._shown_records = {}
+        if self._nv08c_temp is not None:
+            self._nv08c_temp.cleanup()
+            self._nv08c_temp = None
         self.table.clear()
         self.table.setRowCount(0)
         self.table.setColumnCount(0)
@@ -830,5 +964,8 @@ class MainWindow(QMainWindow):
             self.status.setText("Завершение текущего расчёта…")
             event.ignore()
         else:
+            if self._nv08c_temp is not None:
+                self._nv08c_temp.cleanup()
+                self._nv08c_temp = None
             QApplication.instance().removeEventFilter(self)
             event.accept()

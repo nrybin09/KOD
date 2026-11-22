@@ -84,7 +84,6 @@ class SimulationSettings:
     forward_minutes: float = 10
     step_seconds: float = 10
     speed: float = 10
-    n4: int = 1
     sample_count: int | None = None
 
     @property
@@ -102,8 +101,6 @@ class SimulationSettings:
             raise ValueError("Интервал назад должен быть ≤ 0, вперёд — ≥ 0.")
         if self.step_seconds <= 0 or self.speed <= 0:
             raise ValueError("Шаг и скорость моделирования должны быть больше нуля.")
-        if not 1 <= self.n4 <= 100:
-            raise ValueError("N4 должен быть от 1 до 100.")
         start, end = 60 * self.backward_minutes, 60 * self.forward_minutes
         if self.sample_count is not None:
             if not isinstance(self.sample_count, int) or not 2 <= self.sample_count <= 20000:

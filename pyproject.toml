@@ -12,7 +12,11 @@ dependencies = [
     "matplotlib>=3.7",
     "numpy>=1.24",
     "PySide6>=6.5",
+    "pyserial>=3.5",
 ]
 
 [tool.setuptools.packages.find]
 include = ["nka_app*"]
+
+[tool.setuptools.package-data]
+nka_app = ["assets/*.svg"]
